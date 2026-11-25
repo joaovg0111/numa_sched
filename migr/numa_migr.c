@@ -1,223 +1,159 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <bpf/libbpf.h>
+
+/* The generated skeleton uses kernel-style type names from vmlinux.h. */
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef int8_t   s8;
+typedef int16_t  s16;
+typedef int32_t  s32;
+typedef int64_t  s64;
+
+#include "numa_migr.bpf.skel.h"
+
+static volatile sig_atomic_t exit_req;
+static void sigint_handler(int sig) { exit_req = 1; }
+
+static int libbpf_print_fn(enum libbpf_print_level l, const char *f, va_list a)
+{
+	return l == LIBBPF_DEBUG ? 0 : vfprintf(stderr, f, a);
+}
+
 /*
- * numa_migr: sched_ext scheduler that forces one process to hop between
- * NUMA nodes every N ms, to measure the cost of a NUMA-oblivious scheduler.
- *
- * Self-contained: needs only vmlinux.h (from the running kernel) and libbpf's
- * bpf_helpers.h. No scx repo headers.
+ * Read the NUMA topology from sysfs (no libnuma needed):
+ *   /sys/devices/system/node/nodeN/cpulist  ->  "0-7,16-23"
+ * Returns the number of nodes (highest node id + 1), or 0 on failure.
  */
-#include "vmlinux.h"
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_tracing.h>
-#include <bpf/bpf_core_read.h>
-
-char _license[] SEC("license") = "GPL";
-
-#define BPF_STRUCT_OPS(name, args...) \
-	SEC("struct_ops/"#name) BPF_PROG(name, ##args)
-
-/* Hide a value from the compiler so a verifier-required check isn't removed. */
-#define barrier_var(var) asm volatile("" : "+r"(var))
-
-#define MAX_NODES 8
-#define MAX_CPUS  256
-
-/* sched_ext constants (ABI-stable values from include/linux/sched/ext.h) */
-#define NM_DSQ_BUILTIN	(1ULL << 63)
-#define NM_DSQ_GLOBAL	(NM_DSQ_BUILTIN | 1)
-#define NM_DSQ_LOCAL_ON	(NM_DSQ_BUILTIN | (1ULL << 62))
-#define NM_SLICE_DFL	(20ULL * 1000 * 1000)	/* 20 ms */
-
-/*
- * kfuncs. If your kernel names/signatures differ, check with:
- *   bpftool btf dump file /sys/kernel/btf/vmlinux | grep -E 'scx_bpf_(dsq_insert|select_cpu|task_cpu)'
- * and copy the declarations from your working minimal scheduler.
- */
-s32  scx_bpf_select_cpu_dfl(struct task_struct *p, s32 prev_cpu,
-			    u64 wake_flags, bool *is_idle) __ksym;
-void scx_bpf_dsq_insert(struct task_struct *p, u64 dsq_id, u64 slice,
-			u64 enq_flags) __ksym;
-s32  scx_bpf_task_cpu(const struct task_struct *p) __ksym;
-bool bpf_cpumask_test_cpu(u32 cpu, const struct cpumask *cpumask) __ksym;
-
-/* ---- configuration, filled by userspace before load ---- */
-const volatile u32 target_tgid;
-const volatile u64 migrate_interval_ns;
-const volatile u32 nr_nodes = 1;
-const volatile u16 cpu_node[MAX_CPUS];
-const volatile u16 node_ncpus[MAX_NODES];
-const volatile u16 node_cpus[MAX_NODES][MAX_CPUS];
-
-/* ---- stats / exit info, read by userspace ---- */
-u64 stat_runs;
-u64 stat_cpu_migrations;
-u64 stat_node_migrations;
-u64 stat_forced_moves;
-
-u64 exited;
-s64 exit_kind;
-s64 exit_code;
-char exit_reason[128];
-char exit_msg[256];
-
-struct task_ctx {
-	u64 last_move_ns;
-	s32 last_cpu;
-	u32 last_node;
-	bool seen;
-};
-
-struct {
-	__uint(type, BPF_MAP_TYPE_TASK_STORAGE);
-	__uint(map_flags, BPF_F_NO_PREALLOC);
-	__type(key, int);
-	__type(value, struct task_ctx);
-} task_ctxs SEC(".maps");
-
-static __always_inline bool is_target(struct task_struct *p)
+static int load_topology(struct numa_migr *skel)
 {
-	return target_tgid && p->tgid == target_tgid;
-}
+	int max_cpus  = sizeof(skel->rodata->cpu_node) / sizeof(skel->rodata->cpu_node[0]);
+	int max_nodes = sizeof(skel->rodata->node_ncpus) / sizeof(skel->rodata->node_ncpus[0]);
+	int nr_nodes = 0;
 
-static __always_inline u32 node_of(s32 cpu)
-{
-	if (cpu < 0 || cpu >= MAX_CPUS)
-		return 0;
-	return cpu_node[cpu];
-}
+	for (int n = 0; n < max_nodes; n++) {
+		char path[128], buf[4096];
+		FILE *f;
 
-/* Random allowed CPU inside @node, or -1 if none. */
-static s32 pick_cpu_in_node(struct task_struct *p, u32 node)
-{
-	u32 n, i, j, start;
-	s32 cpu;
+		snprintf(path, sizeof(path),
+			 "/sys/devices/system/node/node%d/cpulist", n);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (!fgets(buf, sizeof(buf), f)) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		nr_nodes = n + 1;
 
-	if (node >= MAX_NODES)
-		return -1;
-	n = node_ncpus[node];
-	if (!n || n > MAX_CPUS)
-		return -1;
+		for (char *tok = strtok(buf, ",\n"); tok; tok = strtok(NULL, ",\n")) {
+			int lo, hi;
 
-	start = bpf_get_prandom_u32() % n;
-	for (i = 0; i < MAX_CPUS; i++) {
-		if (i >= n)
-			break;
-		j = (start + i) % n;
-		barrier_var(j);	/* keep the bounds check below from being optimized out */
-		if (j >= MAX_CPUS)
-			break;
-		cpu = node_cpus[node][j];
-		if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
-			return cpu;
-	}
-	return -1;
-}
-
-s32 BPF_STRUCT_OPS(numa_select_cpu, struct task_struct *p, s32 prev_cpu,
-		   u64 wake_flags)
-{
-	bool idle = false;
-	s32 cpu;
-
-	/* Target: keep prev_cpu, real placement happens in enqueue. */
-	if (is_target(p))
-		return prev_cpu;
-
-	cpu = scx_bpf_select_cpu_dfl(p, prev_cpu, wake_flags, &idle);
-	if (idle)
-		scx_bpf_dsq_insert(p, NM_DSQ_LOCAL_ON | cpu, NM_SLICE_DFL, 0);
-	return cpu;
-}
-
-void BPF_STRUCT_OPS(numa_enqueue, struct task_struct *p, u64 enq_flags)
-{
-	struct task_ctx *tc;
-	u64 slice = NM_SLICE_DFL;
-	s32 cpu;
-	u32 cur, k;
-
-	if (!is_target(p)) {
-		scx_bpf_dsq_insert(p, NM_DSQ_GLOBAL, NM_SLICE_DFL, enq_flags);
-		return;
-	}
-
-	cpu = scx_bpf_task_cpu(p);
-	tc = bpf_task_storage_get(&task_ctxs, p, 0,
-				  BPF_LOCAL_STORAGE_GET_F_CREATE);
-
-	if (tc && migrate_interval_ns) {
-		u64 now = bpf_ktime_get_ns();
-
-		slice = migrate_interval_ns;	/* make it come back to us */
-
-		if (now - tc->last_move_ns >= migrate_interval_ns) {
-			cur = node_of(cpu);
-			/* next non-empty node, round-robin */
-			for (k = 1; k < MAX_NODES; k++) {
-				u32 nxt;
-				s32 c;
-
-				if (k >= nr_nodes)
-					break;
-				nxt = (cur + k) % nr_nodes;
-				c = pick_cpu_in_node(p, nxt);
-				if (c >= 0) {
-					cpu = c;
-					tc->last_move_ns = now;
-					__sync_fetch_and_add(&stat_forced_moves, 1);
-					break;
+			if (sscanf(tok, "%d-%d", &lo, &hi) != 2) {
+				if (sscanf(tok, "%d", &lo) != 1)
+					continue;
+				hi = lo;
+			}
+			for (int c = lo; c <= hi; c++) {
+				if (c < 0 || c >= max_cpus) {
+					fprintf(stderr, "warning: CPU %d >= MAX_CPUS, ignored\n", c);
+					continue;
 				}
+				skel->rodata->cpu_node[c] = n;
+				skel->rodata->node_cpus[n][skel->rodata->node_ncpus[n]++] = c;
 			}
 		}
 	}
-
-	scx_bpf_dsq_insert(p, NM_DSQ_LOCAL_ON | cpu, slice, enq_flags);
+	return nr_nodes;
 }
 
-/* Measure where the task actually runs. */
-void BPF_STRUCT_OPS(numa_running, struct task_struct *p)
+int main(int argc, char **argv)
 {
-	struct task_ctx *tc;
-	s32 cpu;
-	u32 node;
+	struct numa_migr *skel;
+	struct bpf_link *link;
+	unsigned long pid = 0, interval_ms = 0, req_nodes = 0;
+	int opt, err;
 
-	if (!is_target(p))
-		return;
-	tc = bpf_task_storage_get(&task_ctxs, p, 0,
-				  BPF_LOCAL_STORAGE_GET_F_CREATE);
-	if (!tc)
-		return;
-
-	cpu = bpf_get_smp_processor_id();
-	node = node_of(cpu);
-
-	__sync_fetch_and_add(&stat_runs, 1);
-	if (tc->seen) {
-		if (cpu != tc->last_cpu)
-			__sync_fetch_and_add(&stat_cpu_migrations, 1);
-		if (node != tc->last_node)
-			__sync_fetch_and_add(&stat_node_migrations, 1);
+	while ((opt = getopt(argc, argv, "p:i:n:h")) != -1) {
+		switch (opt) {
+		case 'p': pid = strtoul(optarg, NULL, 0); break;
+		case 'i': interval_ms = strtoul(optarg, NULL, 0); break;
+		case 'n': req_nodes = strtoul(optarg, NULL, 0); break;
+		default:
+			fprintf(stderr,
+				"usage: %s -p <tgid> [-i <migrate_ms, 0=never>] [-n <nodes to hop among, default all>]\n",
+				argv[0]);
+			return opt == 'h' ? 0 : 1;
+		}
 	}
-	tc->seen = true;
-	tc->last_cpu = cpu;
-	tc->last_node = node;
-}
+	if (!pid) { fprintf(stderr, "need -p <tgid>\n"); return 1; }
 
-void BPF_STRUCT_OPS(numa_exit, struct scx_exit_info *ei)
-{
-	exit_kind = BPF_CORE_READ(ei, kind);
-	exit_code = BPF_CORE_READ(ei, exit_code);
-	bpf_probe_read_kernel_str(exit_reason, sizeof(exit_reason),
-				  BPF_CORE_READ(ei, reason));
-	bpf_probe_read_kernel_str(exit_msg, sizeof(exit_msg),
-				  BPF_CORE_READ(ei, msg));
-	exited = 1;
-}
+	signal(SIGINT, sigint_handler);
+	signal(SIGTERM, sigint_handler);
+	libbpf_set_print(libbpf_print_fn);
 
-SEC(".struct_ops.link")
-struct sched_ext_ops numa_ops = {
-	.select_cpu = (void *)numa_select_cpu,
-	.enqueue    = (void *)numa_enqueue,
-	.running    = (void *)numa_running,
-	.exit       = (void *)numa_exit,
-	.name       = "numa_migr",
-};
+	skel = numa_migr__open();
+	if (!skel) { fprintf(stderr, "failed to open skeleton\n"); return 1; }
+
+	/* Topology -> rodata */
+	int nr_nodes = load_topology(skel);
+
+	if (nr_nodes <= 0) {
+		fprintf(stderr, "no NUMA nodes found in /sys/devices/system/node\n");
+		numa_migr__destroy(skel);
+		return 1;
+	}
+	if (req_nodes) {
+		if (req_nodes > (unsigned long)nr_nodes) {
+			fprintf(stderr, "-n %lu requested but machine has only %d nodes\n",
+				req_nodes, nr_nodes);
+			numa_migr__destroy(skel);
+			return 1;
+		}
+		nr_nodes = req_nodes;	/* hop only among nodes 0..req_nodes-1 */
+	}
+	skel->rodata->nr_nodes = nr_nodes;
+	skel->rodata->target_tgid = pid;
+	skel->rodata->migrate_interval_ns = (unsigned long long)interval_ms * 1000000ULL;
+
+	err = numa_migr__load(skel);
+	if (err) {
+		fprintf(stderr, "failed to load: %d\n", err);
+		numa_migr__destroy(skel);
+		return 1;
+	}
+
+	link = bpf_map__attach_struct_ops(skel->maps.numa_ops);
+	if (!link) {
+		fprintf(stderr, "failed to attach struct_ops (is sched_ext enabled? root?)\n");
+		numa_migr__destroy(skel);
+		return 1;
+	}
+
+	printf("target=%lu interval=%lums nodes=%u\n", pid, interval_ms,
+	       skel->rodata->nr_nodes);
+	while (!exit_req && !skel->bss->exited) {
+		printf("runs=%llu cpu_mig=%llu node_mig=%llu forced=%llu\n",
+		       skel->bss->stat_runs, skel->bss->stat_cpu_migrations,
+		       skel->bss->stat_node_migrations, skel->bss->stat_forced_moves);
+		fflush(stdout);
+		sleep(1);
+	}
+
+	bpf_link__destroy(link);
+	if (skel->bss->exited)
+		fprintf(stderr, "scheduler exited: kind=%lld code=%lld reason=%s msg=%s\n",
+			(long long)skel->bss->exit_kind,
+			(long long)skel->bss->exit_code,
+			skel->bss->exit_reason, skel->bss->exit_msg);
+	numa_migr__destroy(skel);
+	return 0;
+}
