@@ -99,8 +99,8 @@ static s32 pick_cpu_in_node(struct task_struct *p, u32 node)
 		if (i >= n)
 			break;
 		j = (start + i) % n;
-		if (j >= MAX_CPUS)
-			break;
+		asm volatile("" : "+r"(j));
+		j &= (MAX_CPUS - 1);
 		cpu = node_cpus[node][j];
 		if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
 			return cpu;
