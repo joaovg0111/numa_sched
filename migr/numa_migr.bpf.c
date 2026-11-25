@@ -85,7 +85,7 @@ static __always_inline u32 node_of(s32 cpu)
 /* Random allowed CPU inside @node, or -1 if none. */
 static s32 pick_cpu_in_node(struct task_struct *p, u32 node)
 {
-	u32 n, i, j, start;
+	u32 n, i, j;
 	s32 cpu;
 
 	if (node >= MAX_NODES)
@@ -94,14 +94,21 @@ static s32 pick_cpu_in_node(struct task_struct *p, u32 node)
 	if (!n || n > MAX_CPUS)
 		return -1;
 
-	start = bpf_get_prandom_u32() % n;
-	for (i = 0; i < MAX_CPUS; i++) {
-		if (i >= n)
-			break;
-		j = (start + i) % n;
+	/* Fast path: a few independent random probes (no wraparound state). */
+	for (i = 0; i < 8; i++) {
+		j = bpf_get_prandom_u32() % n;
 		asm volatile("" : "+r"(j));
 		j &= (MAX_CPUS - 1);
 		cpu = node_cpus[node][j];
+		if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
+			return cpu;
+	}
+
+	/* Fallback: linear scan if task affinity is narrowly pinned. */
+	for (i = 0; i < MAX_CPUS; i++) {
+		if (i >= n)
+			break;
+		cpu = node_cpus[node][i];
 		if (bpf_cpumask_test_cpu(cpu, p->cpus_ptr))
 			return cpu;
 	}

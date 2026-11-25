@@ -11,7 +11,7 @@ numactl --cpunodebind=0 --membind=0 ./benchmark/membench -m chase -s 1024 &
 PID=$!
 
 if $USE_MIGR; then
-    sudo ./migr/numa_migr -p "$PID" -i 100 -n 1
+    sudo ./migr/numa_migr -p "$PID" -i 100 -n 2
 fi
 
 wait "$PID"
