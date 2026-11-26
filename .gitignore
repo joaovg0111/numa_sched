@@ -9,6 +9,7 @@ vmlinux.h
 benchmark/membench
 benchmark/stream
 benchmark/stream_omp
+benchmark/ext
 
 # ---- general C/build artifacts ----
 *.o

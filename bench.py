@@ -83,6 +83,13 @@ def parse_xsbench(stdout):
     return parse_number(m.group(1)) / 1e6, "MLookup/s"
 
 
+def parse_duckdb(stdout):
+    times = re.findall(r"Run Time \(s\):\s+real\s+([\d.]+)", stdout)
+    if not times:
+        return None, None
+    return sum(float(t) for t in times), "sec"
+
+
 def parse_migr_stats(stdout):
     lines = re.findall(
         r"(?:FINAL\s+)?runs=(\d+)\s+cpu_mig=(\d+)\s+node_mig=(\d+)\s+forced=(\d+)",
@@ -160,7 +167,11 @@ def main():
     ap = argparse.ArgumentParser(description="NUMA scheduler benchmark suite")
     ap.add_argument(
         "--bench",
-        choices=["chase", "stream", "stream_omp", "stream_st", "gapbs_pr", "gapbs_bfs", "xsbench"],
+        choices=[
+            "chase", "stream", "stream_omp", "stream_st",
+            "gapbs_pr", "gapbs_bfs", "gapbs_cc", "gapbs_sssp",
+            "xsbench", "duckdb_tpch",
+        ],
         default="gapbs_pr",
         help="Built-in workload (ignored if --cmd is set; default: gapbs_pr)",
     )
@@ -296,6 +307,24 @@ def main():
         wait_ready = False
         lower_is_better = True
         bench_label = "gapbs_bfs"
+    elif args.bench == "gapbs_cc":
+        base_cmd = ["./benchmark/ext/gapbs/cc", "-g", "22", "-n", "15"]
+        parser = parse_gapbs
+        wait_ready = False
+        lower_is_better = True
+        bench_label = "gapbs_cc"
+    elif args.bench == "gapbs_sssp":
+        base_cmd = ["./benchmark/ext/gapbs/sssp", "-g", "22", "-n", "15"]
+        parser = parse_gapbs
+        wait_ready = False
+        lower_is_better = True
+        bench_label = "gapbs_sssp"
+    elif args.bench == "duckdb_tpch":
+        base_cmd = ["./benchmark/ext/duckdb/duckdb", "-f", "./benchmark/tpch.sql"]
+        parser = parse_duckdb
+        wait_ready = False
+        lower_is_better = True
+        bench_label = "duckdb_tpch"
     else:  # xsbench
         base_cmd = ["./benchmark/ext/XSBench/openmp-threading/XSBench", "-s", "large", "-p", "2000000"]
         parser = parse_xsbench
