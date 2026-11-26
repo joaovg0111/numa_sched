@@ -1,6 +1,3 @@
-Here is a clean README.md reflecting the current state of the repository,
-components, usage, and roadmap:
-
 # numa_sched
 
 A Linux `sched_ext` (eBPF) NUMA-aware CPU scheduler project.
