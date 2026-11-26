@@ -1,0 +1,6 @@
+[submodule "benchmark/ext/gapbs"]
+	path = benchmark/ext/gapbs
+	url = https://github.com/sbeamer/gapbs.git
+[submodule "benchmark/ext/XSBench"]
+	path = benchmark/ext/XSBench
+	url = https://github.com/ANL-CESAR/XSBench.git
