@@ -1,2 +1,38 @@
-build/
+# ---- migr (eBPF / sched_ext) ----
+migr/build/
 migr/numa_migr
+*.bpf.o
+*.skel.h
+vmlinux.h
+
+# ---- benchmark binaries ----
+benchmark/membench
+benchmark/stream
+benchmark/stream_omp
+
+# ---- general C/build artifacts ----
+*.o
+*.d
+*.a
+*.so
+*.out
+
+# ---- benchmark outputs ----
+*.csv
+results/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+
+# ---- editors & OS ----
+.vscode/
+.idea/
+compile_commands.json
+*.swp
+*.swo
+*~
+.DS_Store
+.zip
+zip_all.sh
