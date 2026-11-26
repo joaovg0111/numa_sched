@@ -1,0 +1,25 @@
+NUMA benchmark summary
+======================================================================================================
+run_id     : 20261126_181339
+started    : 2026-11-26T18:13:39
+status     : complete
+total time : 17.0s
+host/kernel: debianAcer / 7.1.13+deb14-amd64
+nodes      : [0]  (mem_node=0, remote_node=0)
+settings   : threads=16 repeats=1 cases=local,cfs
+command    : ./bench.py --bench gapbs_cc --threads 16
+
+Time per benchmark
+------------------------------------------------------------
+Benchmark        Status                       Time
+gapbs_cc         ok                          17.0s
+TOTAL                                        17.0s
+
+======================================================================================================
+Benchmark: gapbs_cc (threads=16, repeats=1, mem_node=0, remote_node=0)
+Case                Score Unit       vs Local     Runs  CPU_Mig  Node_Mig  Forced      Time
+------------------------------------------------------------------------------------------------------
+local               0.063 sec          100.0%        -        -         -       -      8.6s
+cfs                 0.066 sec           96.3%        -        -         -       -      8.3s
+======================================================================================================
+

@@ -1,0 +1,60 @@
+Output folder: results_20261126_181339
+
+##### gapbs_cc #####
+==> Running [local]: numactl --cpunodebind=0 --membind=0 ./benchmark/ext/gapbs/cc -g 22 -n 15
+
+----- [local] benchmark output -----
+Generate Time:       3.22948
+Build Time:          3.03238
+Graph has 4194302 nodes and 64155725 undirected edges for degree: 15
+Trial Time:          0.06759
+Trial Time:          0.06722
+Trial Time:          0.07772
+Trial Time:          0.06272
+Trial Time:          0.06002
+Trial Time:          0.06323
+Trial Time:          0.05812
+Trial Time:          0.06237
+Trial Time:          0.06336
+Trial Time:          0.06323
+Trial Time:          0.06407
+Trial Time:          0.05960
+Trial Time:          0.05892
+Trial Time:          0.05942
+Trial Time:          0.06310
+Average Time:        0.06338
+----- end -----
+==> Running [cfs]: numactl --membind=0 ./benchmark/ext/gapbs/cc -g 22 -n 15
+
+----- [cfs] benchmark output -----
+Generate Time:       3.13077
+Build Time:          2.83894
+Graph has 4194302 nodes and 64155725 undirected edges for degree: 15
+Trial Time:          0.05887
+Trial Time:          0.06189
+Trial Time:          0.06079
+Trial Time:          0.06545
+Trial Time:          0.06234
+Trial Time:          0.06049
+Trial Time:          0.06651
+Trial Time:          0.05818
+Trial Time:          0.06018
+Trial Time:          0.06108
+Trial Time:          0.05940
+Trial Time:          0.06317
+Trial Time:          0.07090
+Trial Time:          0.07848
+Trial Time:          0.09913
+Average Time:        0.06579
+----- end -----
+
+======================================================================================================
+Benchmark: gapbs_cc (threads=16, repeats=1, mem_node=0, remote_node=0)
+Case                Score Unit       vs Local     Runs  CPU_Mig  Node_Mig  Forced      Time
+------------------------------------------------------------------------------------------------------
+local               0.063 sec          100.0%        -        -         -       -      8.6s
+cfs                 0.066 sec           96.3%        -        -         -       -      8.3s
+======================================================================================================
+[gapbs_cc] took 17.0s (ok)
+
+Done in 17.0s. Files in results_20261126_181339/: results.csv, full_run.log, summary.txt
