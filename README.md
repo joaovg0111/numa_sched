@@ -2,122 +2,168 @@
 
 A Linux `sched_ext` (eBPF) NUMA-aware CPU scheduler project.
 
-## Project Status
+## Project status
 
-The project is in **Phase 1 (Benchmarking & Baseline Groundwork)**. Before implementing the NUMA-aware scheduler itself, this repository provides:
+The project is in **Phase 1 (benchmarking and baseline groundwork)**. Before the NUMA-aware scheduler itself is implemented, this repository provides:
 
-1. **`numa_migr` (`migr/`)**: A deliberately NUMA-oblivious `sched_ext` scheduler that forces a target process (`tgid`) to hop round-robin across NUMA nodes every $N$ milliseconds, simulating worst-case cross-node migration overhead and recording CPU/node migration telemetry.
-2. **Benchmark Suite (`benchmark/`)**: A mix of microbenchmarks and standard multi-threaded workloads covering memory latency, memory bandwidth, irregular graph traversal, random DRAM lookups, and analytical SQL queries.
-3. **Evaluation Harness (`bench.py`)**: A unified runner that compares any workload across hardware bounds (`local`, `remote`), stock Linux (`cfs`), controlled migration degradation (`migr`), and pluggable custom schedulers (`custom`).
+1. **`numa_migr`** (`migr/`): a deliberately NUMA-oblivious `sched_ext` scheduler that forces a target process (`tgid`) to hop round-robin across NUMA nodes every *N* ms. It is a stressor that simulates worst-case cross-node migration cost and records CPU/node migration telemetry. It is **not** a candidate scheduler.
+2. **Benchmark suite** (`benchmark/`): microbenchmarks and standard multi-threaded workloads covering memory latency, memory bandwidth, irregular graph traversal, random DRAM lookups and analytical SQL.
+3. **Evaluation harness** (`bench.py`): runs any workload under hardware bounds (`local`, `remote`), the stock Linux scheduler (`cfs`), controlled migration (`migr`) and pluggable custom schedulers (`custom`), and writes everything to one results folder.
 
 ### Roadmap
 
-- [x] `numa_migr` eBPF `sched_ext` stressor & sysfs topology loader
+- [x] `numa_migr` eBPF `sched_ext` stressor and sysfs topology loader
 - [x] Microbenchmarks (`membench` latency/bandwidth, McCalpin `stream` / `stream_omp`)
-- [x] Standard workloads (`GAPBS`, `XSBench`, `DuckDB TPC-H`)
-- [x] Automated `bench.py` harness with selectable cases, CSV export, and `--sched` hook
+- [x] Standard workloads (GAPBS, XSBench, DuckDB TPC-H)
+- [x] `bench.py` harness: selectable cases, per-run results folder (CSV, log, summary), `--sched` hook
 - [ ] Baseline NUMA sensitivity characterization on multi-socket hardware
-- [ ] NUMA-aware `sched_ext` scheduler implementation (per-node DSQs & locality-preserving placement)
-- [ ] Phase 2 workloads (multi-process / client–server tests such as Memcached + `memtier_benchmark`)
+- [ ] NUMA-aware `sched_ext` scheduler (per-node DSQs, locality-preserving placement, load balancing)
+- [ ] Phase 2 workloads (multi-process / client-server, e.g. Memcached + `memtier_benchmark`)
 
 ---
 
-## Repository Structure
+## Repository structure
 
 ```text
 .
-├── Makefile              # Top-level build (builds migr + benchmarks)
-├── bench.py              # Automated NUMA benchmark harness
+├── Makefile              # Top-level build (migr + benchmarks)
+├── bench.py              # Benchmark harness
+├── run.sh                # Quick manual demo: membench chase, optionally under numa_migr
 ├── migr/
 │   ├── Makefile
 │   ├── numa_migr.bpf.c   # sched_ext BPF scheduler (round-robin NUMA hopping)
 │   └── numa_migr.c       # Userspace loader, topology parser, stats reporter
-└── benchmark/
-    ├── Makefile          # Builds local benchmarks + fetches external suites
-    ├── membench.c        # Pointer-chasing latency & streaming bandwidth microbenchmark
-    ├── stream.c          # McCalpin STREAM (single-threaded & OpenMP)
-    ├── tpch.sql          # In-memory DuckDB TPC-H query workload (SF=3)
-    └── ext/              # External benchmarks (GAPBS, XSBench, DuckDB CLI)
+├── benchmark/
+│   ├── Makefile          # Builds local benchmarks, fetches external suites
+│   ├── membench.c        # Pointer-chasing latency / streaming bandwidth microbenchmark
+│   ├── stream.c          # McCalpin STREAM (single-threaded and OpenMP builds)
+│   ├── tpch.sql          # DuckDB TPC-H workload (SF=3)
+│   └── ext/              # External suites (GAPBS, XSBench, DuckDB CLI), created by make
+└── results/              # Output of bench.py (git-ignored)
+```
 
-Requirements
+## Requirements
 
-  - Kernel: Linux with sched_ext (CONFIG_SCHED_CLASS_EXT=y) and BTF
-    (CONFIG_DEBUG_INFO_BTF=y, /sys/kernel/btf/vmlinux readable).
-  - Build & Runtime Tools (Debian/Ubuntu):
-    sudo apt install clang llvm libbpf-dev libelf-dev zlib1g-dev \
-                     gcc g++ make python3 numactl curl \
-                     linux-tools-common linux-tools-$(uname -r)
+- Kernel with `sched_ext` (`CONFIG_SCHED_CLASS_EXT=y`) and BTF (`CONFIG_DEBUG_INFO_BTF=y`, `/sys/kernel/btf/vmlinux` readable).
+- A machine with **at least 2 NUMA nodes** for the `remote` and `migr` cases (single-node hosts can only run `local`/`cfs`).
+- Build and runtime tools (Debian/Ubuntu):
 
-Building
+```bash
+sudo apt install clang llvm libbpf-dev libelf-dev zlib1g-dev \
+                 gcc g++ make python3 numactl curl \
+                 linux-tools-common linux-tools-$(uname -r)
+```
 
-Clone with submodules and run make (this compiles migr/numa_migr, membench,
-stream, stream_omp, fetches/builds GAPBS and XSBench, and downloads DuckDB CLI +
-installs the tpch extension):
+## Building
 
+```bash
 git clone --recurse-submodules <repo-url>
 cd numa_sched
 make
+```
 
-Offline servers: Run git clone --recurse-submodules and make fetch on an
-internet-connected machine first, then copy the directory to the target server
-and run make.
+`make` compiles `numa_migr`, `membench`, `stream` and `stream_omp`, builds GAPBS and XSBench, and downloads the DuckDB CLI with its `tpch` extension.
 
-Workloads
+Offline servers: run `git clone --recurse-submodules` and `make fetch` on a connected machine, copy the directory to the target server, then run `make`.
 
-| `--bench` key | Workload                           | Primary Bottleneck                | Metric      |
-| :------------ | :--------------------------------- | :-------------------------------- | :---------- |
-| `chase`       | `membench` pointer chase (1T)      | DRAM / interconnect latency       | `Macc/s`    |
-| `stream`      | `membench` triad (1T)              | Single-core memory bandwidth      | `GB/s`      |
-| `stream_st`   | McCalpin STREAM (1T)               | Single-core memory bandwidth      | `GB/s`      |
-| `stream_omp`  | McCalpin STREAM (OpenMP)           | Multi-core aggregate bandwidth    | `GB/s`      |
-| `gapbs_pr`    | GAPBS PageRank (`-g 22 -n 15`)     | Irregular graph memory access     | `sec`       |
-| `gapbs_bfs`   | GAPBS BFS (`-g 22 -n 30`)          | Latency-sensitive traversal       | `sec`       |
-| `gapbs_cc`    | GAPBS Connected Components         | Cross-core atomic updates         | `sec`       |
-| `gapbs_sssp`  | GAPBS Shortest Paths               | Dynamic OpenMP + irregular access | `sec`       |
-| `xsbench`     | XSBench (`-s large -p 2000000`)    | Random DRAM lookup latency        | `MLookup/s` |
-| `duckdb_tpch` | DuckDB TPC-H (`sf=3`, Q1/3/5/9/18) | Vectorized OLAP scan/join/hash    | `sec`       |
+---
 
-Running Benchmarks (bench.py)
+## Benchmarks
 
-bench.py discovers NUMA nodes from /sys/devices/system/node and runs the
-selected scheduling cases while keeping memory pinned to Node 0 (numactl
---membind=0):
+Select one with `--bench <key>`, several with `--bench a,b,c`, or everything with `--bench all`.
 
-  - local: --cpunodebind=N0 --membind=N0 (ideal upper bound)
-  - remote: --cpunodebind=N1 --membind=N0 (cross-socket lower bound)
-  - cfs: --membind=N0 under stock Linux CFS
-  - migr: --membind=N0 under numa_migr across -i intervals (ms)
-  - custom: --membind=N0 under your --sched binary
+| `--bench` key | Workload | What it stresses | Metric (better) |
+| :-- | :-- | :-- | :-- |
+| `chase` | `membench` pointer chase, 1 thread, 1 GB buffer | Every load depends on the previous one in a random cycle, so it measures raw DRAM / interconnect **latency** | Macc/s (higher) |
+| `stream` | `membench` streaming, 1 thread | Single-core memory **bandwidth** | GB/s (higher) |
+| `stream_st` | McCalpin STREAM, 1 thread (40M-element arrays, 80 iterations) | Single-core memory bandwidth, reports Triad | GB/s (higher) |
+| `stream_omp` | McCalpin STREAM, OpenMP | **Aggregate** bandwidth of all threads; threads wait at a barrier after each kernel, so the slowest thread sets the pace | GB/s (higher) |
+| `gapbs_pr` | GAPBS PageRank (`-g 22 -n 15`) | Iterative sweeps over a graph; mostly streaming reads plus irregular gathers | sec (lower) |
+| `gapbs_bfs` | GAPBS BFS (`-g 22 -n 30`) | Irregular, latency-sensitive traversal; very short trials (about 20 ms) | sec (lower) |
+| `gapbs_cc` | GAPBS Connected Components (`-g 22 -n 15`) | Irregular access plus cross-thread atomic updates | sec (lower) |
+| `gapbs_sssp` | GAPBS Shortest Paths (`-g 22 -n 15`) | Irregular access with dynamic OpenMP work distribution | sec (lower) |
+| `xsbench` | XSBench, OpenMP (`-s large`) | Monte Carlo neutron-transport proxy: random lookups into large tables | MLookup/s (higher) |
+| `duckdb_tpch` | DuckDB, in-memory TPC-H SF=3, Q1/3/5/9/18 run twice | Vectorized OLAP scans, joins and hash aggregation; reports the sum of query times | sec (lower) |
 
-Note: numa_migr and custom intentionally use --membind=N0 without --cpunodebind,
-so memory stays allocated on Node 0 while p->cpus_ptr remains open for the eBPF
-scheduler to place threads across nodes.
+GAPBS uses a synthetic Kronecker graph with 2^22 vertices (`-g 22`). `chase` and the two single-thread STREAM variants ignore `--threads`.
 
-Output
+### Command used for the full run
 
-Each invocation creates one folder (--outdir, default results_YYYYmmdd_HHMMSS)
-containing results.csv (all benchmarks/cases, with metadata and per-case time_s),
-full_run.log (console output + raw output of every run) and summary.txt (run
-info, time taken per benchmark, result tables). --bench takes one name, a
-comma-separated list, or "all".
+```bash
+sudo ./bench.py --bench all --threads 16 --repeat 3
+```
 
-Examples
+This runs every benchmark above with 16 threads and 3 repetitions per case. On our 2-node test machine it took about 1 h 10 min. For long runs, detach it; all output goes to the results folder anyway:
 
-# Everything, 3 repeats, 16 threads, into a named folder
-sudo ./bench.py --bench all --threads 16 --repeat 3 --outdir results/baseline
+```bash
+sudo nohup ./bench.py --bench all --threads 16 --repeat 3 > /dev/null 2>&1 < /dev/null &
+```
 
-# Run full suite (local, remote, cfs, numa_migr sweep) on GAPBS PageRank
+---
+
+## Cases
+
+`bench.py` discovers NUMA nodes from `/sys/devices/system/node` and keeps memory bound to node 0 (`numactl --membind=0`) in every case:
+
+| Case | Setup | Role |
+| :-- | :-- | :-- |
+| `local` | `--cpunodebind=0 --membind=0` | All threads on the memory node. Best-case **locality**, but see the note below: it is not always the fastest possible result |
+| `remote` | `--cpunodebind=1 --membind=0` | All threads on the other node. Worst-case locality |
+| `cfs` | `--membind=0`, no CPU pinning | **Stock Linux scheduler: the baseline a NUMA-aware scheduler has to beat.** (On kernels ≥ 6.6 the fair class is EEVDF; the label `cfs` is historical) |
+| `migr` | `--membind=0` under `numa_migr`, swept over `-i` intervals (ms) | Stressor: forced cross-node hopping every *N* ms. Expected to be slower than `cfs` |
+| `custom` | `--membind=0` under your `--sched` command | Your scheduler under test |
+
+`migr` and `custom` use `--membind=0` without `--cpunodebind`, so memory stays on node 0 while the CPU affinity mask stays open for the eBPF scheduler to place threads on any node.
+
+### Reading the results
+
+- **`vs Local`** is relative to the `local` median (for time-based metrics it is inverted, so higher is always better). Values above 100% are possible: `local` confines all threads to one node's CPUs, while `cfs` can also use the other node's cores and cache.
+- **`migr_0ms`** (interval 0) does *not* mean "CFS without forced migration". `numa_migr` keeps each target thread on the CPU it already had and never rebalances, so this case mostly measures where threads happened to be placed. Treat it as a "sched_ext with no load balancing" control.
+- **Medians can hide bimodal results.** For single-threaded benchmarks the default scheduler sometimes lands on the remote node; check `Min..Max` or `runs.csv`.
+
+---
+
+## Running benchmarks
+
+`bench.py` creates **one folder per invocation**: `--outdir`, or `results/run_YYYYmmdd_HHMMSS` by default. It refuses to reuse a folder that already contains files.
+
+| File | Content |
+| :-- | :-- |
+| `summary.txt` | Run info, **time taken per benchmark**, and the result tables |
+| `results.csv` | One row per case: median, min, max, `vs Local`, migration stats, time, plus metadata (`run_id`, `bench`, `threads`, `kernel`, ...) |
+| `runs.csv` | One row per repetition (raw value, migration stats, time). Use this for mean/min/max/std |
+| `full_run.log` | Everything printed to the console plus the raw output of every benchmark and scheduler run |
+
+The CSV and summary are updated after each benchmark, so an interrupted run still leaves usable files (the summary is marked `INCOMPLETE`). A benchmark that fails is marked `FAILED` and the run continues. When started with `sudo`, the folder is handed back to the invoking user.
+
+Mean/min/max over repetitions:
+
+```python
+import pandas as pd
+
+r = pd.read_csv("results/run_YYYYmmdd_HHMMSS/runs.csv")
+print(r.groupby(["bench", "case"])["value"].agg(["mean", "min", "max", "std"]))
+```
+
+### Examples
+
+```bash
+# Full suite (local, remote, cfs, numa_migr sweep) on GAPBS PageRank
 sudo ./bench.py --bench gapbs_pr
 
-# Run only baselines without sudo
+# Several benchmarks into a named folder
+sudo ./bench.py --bench chase,stream_omp --repeat 3 --outdir results/quick
+
+# Baselines only, without sudo
 ./bench.py --bench xsbench -c local,remote,cfs
 
 # Sweep specific migration intervals on pointer-chasing latency
 sudo ./bench.py --bench chase -s 1024 -t 15 -c local,remote,migr -i 0,100,20,5,1
 
-# Test a custom NUMA-aware scheduler (with optional local/cfs comparison)
+# Test a custom NUMA-aware scheduler against local and cfs
 sudo ./bench.py --bench duckdb_tpch -c local,cfs,custom --sched "./my_sched -p {PID}"
 
-# Run an arbitrary external benchmark command
+# Arbitrary external benchmark command
 sudo ./bench.py --cmd "./benchmark/ext/XSBench/openmp-threading/XSBench -s XL -p 5000000" \
   --regex "Lookups/s:\s+([\d,]+)" --unit "Lookup/s" -c local,cfs,custom --sched "./my_sched -p {PID}"
+```
