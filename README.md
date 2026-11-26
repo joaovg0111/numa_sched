@@ -93,10 +93,21 @@ Note: numa_migr and custom intentionally use --membind=N0 without --cpunodebind,
 so memory stays allocated on Node 0 while p->cpus_ptr remains open for the eBPF
 scheduler to place threads across nodes.
 
+Output
+
+Each invocation creates one folder (--outdir, default results_YYYYmmdd_HHMMSS)
+containing results.csv (all benchmarks/cases, with metadata and per-case time_s),
+full_run.log (console output + raw output of every run) and summary.txt (run
+info, time taken per benchmark, result tables). --bench takes one name, a
+comma-separated list, or "all".
+
 Examples
 
+# Everything, 3 repeats, 16 threads, into a named folder
+sudo ./bench.py --bench all --threads 16 --repeat 3 --outdir results/baseline
+
 # Run full suite (local, remote, cfs, numa_migr sweep) on GAPBS PageRank
-sudo ./bench.py --bench gapbs_pr --csv pr_results.csv
+sudo ./bench.py --bench gapbs_pr
 
 # Run only baselines without sudo
 ./bench.py --bench xsbench -c local,remote,cfs
@@ -110,4 +121,3 @@ sudo ./bench.py --bench duckdb_tpch -c local,cfs,custom --sched "./my_sched -p {
 # Run an arbitrary external benchmark command
 sudo ./bench.py --cmd "./benchmark/ext/XSBench/openmp-threading/XSBench -s XL -p 5000000" \
   --regex "Lookups/s:\s+([\d,]+)" --unit "Lookup/s" -c local,cfs,custom --sched "./my_sched -p {PID}"
-

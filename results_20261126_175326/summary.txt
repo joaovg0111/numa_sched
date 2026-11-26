@@ -1,0 +1,17 @@
+NUMA benchmark summary
+======================================================================================================
+run_id     : 20261126_175326
+started    : 2026-11-26T17:53:26
+status     : INCOMPLETE (still running or aborted)
+total time : 4.0s
+host/kernel: debianAcer / 7.1.13+deb14-amd64
+nodes      : [0]  (mem_node=0, remote_node=0)
+settings   : threads=16 repeats=3 cases=local,cfs
+command    : ./bench.py --bench all --threads 16 --repeat 3
+
+Time per benchmark
+------------------------------------------------------------
+Benchmark        Status                       Time
+chase            interrupted                  4.0s
+TOTAL                                         4.0s
+
