@@ -34,5 +34,5 @@ compile_commands.json
 *.swo
 *~
 .DS_Store
-.zip
+*.zip
 zip_all.sh
