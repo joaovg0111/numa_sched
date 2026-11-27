@@ -4,3 +4,9 @@
 [submodule "benchmark/ext/XSBench"]
 	path = benchmark/ext/XSBench
 	url = https://github.com/ANL-CESAR/XSBench.git
+[submodule "schedulers/--force"]
+	path = schedulers/--force
+	url = https://github.com/sched-ext/scx
+[submodule "schedulers/scx"]
+	path = schedulers/scx
+	url = https://github.com/sched-ext/scx
